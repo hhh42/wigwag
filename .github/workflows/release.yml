@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-14 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: protoc
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then brew install protobuf
+          else sudo apt-get update && sudo apt-get install -y protobuf-compiler; fi
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          name=wigwag-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir "$name"
+          cp target/release/wigwag README.md LICENSE CHANGELOG.md contrib/wigwag.service "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: wigwag-*.tar.gz*
+          generate_release_notes: true

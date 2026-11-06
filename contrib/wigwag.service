@@ -1,0 +1,20 @@
+# systemd user unit: ~/.config/systemd/user/wigwag.service
+#   systemctl --user daemon-reload && systemctl --user enable --now wigwag
+# Link or register first (`wigwag link`), with the same data dir and passphrase.
+[Unit]
+Description=wigwag — Signal daemon (signal-cli HTTP API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/wigwag daemon --http 127.0.0.1:8080
+Environment=WIGWAG_PASSPHRASE_FILE=%h/.config/wigwag/passphrase
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/wigwag
+
+[Install]
+WantedBy=default.target
