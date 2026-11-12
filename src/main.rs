@@ -75,7 +75,8 @@ enum Command {
         /// (the `signalcaptcha://…` link, or just what follows it).
         #[arg(long)]
         captcha: String,
-        /// Have the code read out by a phone call instead of sent by SMS.
+        /// Also have the code read out by a phone call. Signal sends an SMS first
+        /// regardless; the call follows once Signal allows it (about a minute).
         #[arg(long)]
         voice: bool,
         #[arg(long)]
@@ -235,24 +236,43 @@ async fn register(
         .trim()
         .trim_start_matches("signalcaptcha://")
         .to_string();
-    let manager = Manager::register(
+    // Signal places a voice call only once an SMS has been tried on the same
+    // verification session, so a session always starts with an SMS. `--voice`
+    // (or typing `call` at the prompt) then asks for the call on that session.
+    let mut manager = Manager::register(
         store,
         RegistrationOptions {
             signal_servers: SignalServers::Production,
             phone_number: number,
-            use_voice_call: voice,
+            use_voice_call: false,
             captcha: Some(&captcha),
             force,
         },
     )
     .await
     .context("registration request failed")?;
-    println!("Enter the verification code Signal sent:");
+    println!("Signal sent the code by SMS.");
+    if voice && let Err(e) = request_call(&mut manager).await {
+        // Keep the session: the SMS may still arrive, or `call` can retry.
+        eprintln!("{e:#}");
+    }
+    println!("Enter the verification code (or `call` to have it read out by phone):");
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    let code = lines
-        .next_line()
-        .await?
-        .context("no verification code given")?;
+    let code = loop {
+        let line = lines
+            .next_line()
+            .await?
+            .context("no verification code given")?;
+        match line.trim() {
+            "" => continue,
+            "call" | "voice" => {
+                if let Err(e) = request_call(&mut manager).await {
+                    eprintln!("{e:#}");
+                }
+            }
+            code => break code.to_string(),
+        }
+    };
     let manager = manager
         .confirm_verification_code(code.trim())
         .await
@@ -262,6 +282,47 @@ async fn register(
         e164(&manager.registration_data().phone_number)
     );
     Ok(())
+}
+
+/// Ask for the code by voice call on the current session. Signal answers 429
+/// until the call window opens (shortly after the first SMS, sometimes much
+/// later); the wait is in the `Retry-After` header, and the session's
+/// `next_call` can read 0 while that header says otherwise, so take the larger.
+async fn request_call(
+    manager: &mut Manager<SqliteStore, presage::manager::Confirmation>,
+) -> anyhow::Result<()> {
+    use presage::libsignal_service::prelude::ServiceError;
+    use presage::libsignal_service::websocket::registration::VerificationTransport;
+    let give_up = tokio::time::Instant::now() + Duration::from_secs(15 * 60);
+    loop {
+        let wait = match manager
+            .request_verification_code(VerificationTransport::Voice)
+            .await
+        {
+            Ok(_) => {
+                println!("Signal is calling the number to read out the code.");
+                return Ok(());
+            }
+            Err(presage::Error::ServiceError(ServiceError::VerificationSessionRateLimited {
+                session,
+                retry_after,
+            })) => {
+                let next_call = session.next_call.and_then(|s| u64::try_from(s).ok());
+                let header = retry_after.and_then(|d| u64::try_from(d.num_seconds()).ok());
+                let secs = next_call.unwrap_or(0).max(header.unwrap_or(0));
+                // Neither says how long: back off rather than hammer the limiter.
+                let secs = if secs == 0 { 30 } else { secs + 2 };
+                info!(?next_call, ?header, "voice call rate limited");
+                secs
+            }
+            Err(e) => return Err(e).context("could not request a voice call"),
+        };
+        if tokio::time::Instant::now() + Duration::from_secs(wait) > give_up {
+            bail!("Signal won't place a call for another {wait}s; type `call` later to try again");
+        }
+        println!("Signal allows a call in {wait}s; waiting…");
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+    }
 }
 
 async fn daemon(cli: &Cli, addr: SocketAddr, opts: Options, backlog: usize) -> anyhow::Result<()> {

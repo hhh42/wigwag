@@ -49,3 +49,9 @@ strip = true
 # presage-store-sqlite needs whisperfish's SQLCipher-enabled libsqlite3-sys.
 [patch.crates-io]
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
+
+# LOCAL: presage with Manager<_, Confirmation>::request_verification_code (voice fallback).
+# Drop once it lands upstream.
+[patch."https://github.com/whisperfish/presage"]
+presage = { path = "../presage/presage" }
+presage-store-sqlite = { path = "../presage/presage-store-sqlite" }
