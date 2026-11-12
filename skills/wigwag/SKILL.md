@@ -35,8 +35,19 @@ only they can supply: their Signal phone, their agent's name, and their friend's
 1. **Install wigwag.** Get a release binary from
    `https://github.com/hhh42/wigwag/releases`. The builds are
    `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
-   `aarch64-apple-darwin`. Unpack it into `~/.local/bin`, then run
-   `wigwag --version`. To build it instead, see [setup.md](references/setup.md#building).
+   `aarch64-apple-darwin`. Each tarball also contains the bridge, the service files
+   and this skill.
+   ```sh
+   v=v0.1.0 t=aarch64-apple-darwin        # or x86_64-/aarch64-unknown-linux-gnu
+   curl -fLO https://github.com/hhh42/wigwag/releases/download/$v/wigwag-$v-$t.tar.gz
+   tar xzf wigwag-$v-$t.tar.gz && mkdir -p ~/.local/bin
+   cp wigwag-$v-$t/wigwag wigwag-$v-$t/wigwag_bridge.py ~/.local/bin/
+   ~/.local/bin/wigwag --version
+   ```
+   The binary isn't signed. If macOS says it "cannot be opened", it was downloaded
+   through a browser. Fix it with
+   `xattr -d com.apple.quarantine ~/.local/bin/wigwag`. To build from source instead,
+   see [setup.md](references/setup.md#building).
 2. **Make a passphrase.** It encrypts the account database, which holds the
    account's identity keys.
    ```sh

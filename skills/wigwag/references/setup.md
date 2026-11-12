@@ -26,7 +26,7 @@ same data directory and the same passphrase.
 ### Linux (systemd user units)
 
 ```sh
-cp bridge/wigwag_bridge.py ~/.local/bin/
+cp bridge/wigwag_bridge.py ~/.local/bin/   # already there if you used a release tarball
 cp contrib/wigwag.service contrib/wigwag-bridge.service ~/.config/systemd/user/
 # edit wigwag-bridge.service: --name, --owner, --allow, WorkingDirectory
 systemctl --user daemon-reload
@@ -40,7 +40,7 @@ journalctl --user -u wigwag-bridge -f
 launchd doesn't expand `~`, so write your home path into the files:
 
 ```sh
-cp bridge/wigwag_bridge.py ~/.local/bin/
+cp bridge/wigwag_bridge.py ~/.local/bin/   # already there if you used a release tarball
 for f in wigwag wigwag-bridge; do
   sed "s|/Users/YOU|$HOME|g" contrib/$f.plist > ~/Library/LaunchAgents/org.wigwag.$f.plist
 done
