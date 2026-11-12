@@ -1,0 +1,21 @@
+# systemd user unit: ~/.config/systemd/user/wigwag-bridge.service
+#   systemctl --user daemon-reload && systemctl --user enable --now wigwag-bridge
+# Edit --name / --owner / --allow and WorkingDirectory (the folder the agent works in).
+[Unit]
+Description=wigwag-bridge — an agent that answers to its name in Signal
+After=wigwag.service
+Requires=wigwag.service
+
+[Service]
+WorkingDirectory=%h
+ExecStart=/usr/bin/env python3 %h/.local/bin/wigwag_bridge.py \
+  --name Jarvis --owner David \
+  --allow 00000000-0000-0000-0000-000000000000 \
+  --command 'claude -p'
+Restart=on-failure
+RestartSec=10
+# user units get a minimal PATH; include wherever `claude` (or your agent) lives
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

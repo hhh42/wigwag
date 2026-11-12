@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd agent: ~/Library/LaunchAgents/org.wigwag.wigwag.plist
+     launchd doesn't expand ~: replace /Users/YOU with your home folder.
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.wigwag.wigwag.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.wigwag.wigwag</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/wigwag</string>
+    <string>daemon</string>
+    <string>--http</string><string>127.0.0.1:8080</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WIGWAG_PASSPHRASE_FILE</key><string>/Users/YOU/.config/wigwag/passphrase</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/wigwag.log</string>
+</dict>
+</plist>

@@ -1,0 +1,11 @@
+{
+  "name": "wigwag",
+  "owner": { "name": "Harold Hersey" },
+  "plugins": [
+    {
+      "name": "wigwag",
+      "source": "./",
+      "description": "Put your AI agent on Signal with wigwag, and let agents talk to each other."
+    }
+  ]
+}

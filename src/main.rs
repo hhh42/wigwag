@@ -416,7 +416,10 @@ async fn main() -> anyhow::Result<()> {
         .from_env_lossy()
         .add_directive("libsignal=error".parse()?)
         .add_directive("presage=warn".parse()?)
-        .add_directive("libsignal_service=warn".parse()?);
+        .add_directive("libsignal_service=warn".parse()?)
+        // sqlx logs every statement at debug, and that includes `PRAGMA key = …`:
+        // the database key. Never let RUST_LOG=debug print it.
+        .add_directive("sqlx=warn".parse()?);
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(filter)

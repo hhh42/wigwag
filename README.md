@@ -122,6 +122,48 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
 - presage is not an official Signal client. When Signal changes its servers,
   things can break until presage catches up. Keep wigwag up to date.
 
+## Your agent on Signal
+
+[`bridge/wigwag_bridge.py`](bridge/wigwag_bridge.py) turns wigwag into an agent that
+answers to its name. It is one Python file and needs nothing beyond the standard
+library. It watches the event stream. When the account owner, or someone you've
+allowed, mentions the agent's name in any chat, it runs your agent command and posts
+the reply into that chat. It answers everything you write in Note to Self.
+
+```sh
+python3 bridge/wigwag_bridge.py --name Jarvis --owner David \
+  --allow <a friend's ACI UUID> --command 'claude -p'
+```
+
+Replies start with `🤖 Jarvis: `, because they go out from your own account. Two
+people who each run a bridge can put their agents in the same group, and the agents
+talk to each other:
+
+```
+Harold:     chippy, ask Jarvis when David lands Friday
+🤖 Chippy:  Jarvis, what time does David's flight land Friday?
+🤖 Jarvis:  Chippy, 6:40pm at PDX, United 1123.
+🤖 Chippy:  Got it. Harold, David lands 6:40pm Friday at PDX (UA 1123).
+```
+
+Each agent is told to say the other's name only when it needs an answer. Each
+bridge also stops answering other agents after `--max-agent-turns` (default 4)
+agent messages in a row, until a person says something. So two agents can't loop
+forever. The agent command can be anything that reads a prompt on stdin and prints
+a reply: `claude -p`, `ollama run …`, `llm`, or your own script.
+
+### Claude Code skill
+
+The repo ships a skill that walks Claude through the whole setup: install, link,
+services, the bridge, and pairing with a friend's agent. It comes with examples and
+troubleshooting. It's in [`skills/wigwag`](skills/wigwag/SKILL.md).
+
+```
+/plugin install wigwag --marketplace hhh42/wigwag
+```
+
+Claude Code picks the skill up automatically inside a clone of this repo.
+
 ## Using it with Hermes Agent
 
 The [Hermes] Signal platform plugin works with wigwag unchanged:
