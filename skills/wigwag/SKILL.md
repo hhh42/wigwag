@@ -15,7 +15,7 @@ Signal ⇄ wigwag daemon ⇄ wigwag-bridge ⇄ agent command
 
 - **wigwag** is linked to the person's own Signal account as an extra device, the way
   Signal Desktop is. It exposes signal-cli's HTTP API on localhost.
-- **wigwag-bridge** (`bridge/wigwag_bridge.py`, Python 3.9+, stdlib only) watches the
+- **wigwag-bridge** (`bridge/wigwag_bridge.py`, Python 3.10+, stdlib only) watches the
   event stream. It answers when the agent's name is mentioned by the owner or by
   someone on the allow list, and it answers everything in Note to Self.
 - **The agent** is any command that reads a prompt on stdin and prints a reply. The

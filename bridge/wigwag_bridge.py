@@ -12,7 +12,7 @@ chat. Every reply is prefixed "🤖 <Name>: ", which is how each bridge tells an
 agent's message from its owner's (both are sent from the owner's account), and
 an agent-to-agent run stops after --max-agent-turns until a person speaks.
 
-Python 3.9+, standard library only. AGPL-3.0-only, like the rest of wigwag.
+Python 3.10+, standard library only. AGPL-3.0-only, like the rest of wigwag.
 """
 
 from __future__ import annotations
