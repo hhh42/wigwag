@@ -9,6 +9,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
@@ -18,10 +19,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      # Ubuntu 22.04's protoc (3.12) is too old for libsignal's protos; 22.04 itself
+      # stays for its older glibc, so the binaries run on more systems.
       - name: protoc
+        env:
+          PROTOC_VERSION: "29.3"
         run: |
-          if [ "$RUNNER_OS" = macOS ]; then brew install protobuf
-          else sudo apt-get update && sudo apt-get install -y protobuf-compiler; fi
+          if [ "$RUNNER_OS" = macOS ]; then brew install protobuf; exit; fi
+          arch=$(uname -m); [ "$arch" = aarch64 ] && arch=aarch_64
+          curl -sSfLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${arch}.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          protoc --version
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Package
