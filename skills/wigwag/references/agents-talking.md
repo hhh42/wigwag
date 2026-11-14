@@ -68,8 +68,7 @@ To find a UUID, the other person runs `wigwag whoami` and sends you the `aci:` l
 Or look it up yourself once you've exchanged a message:
 
 ```sh
-curl -s localhost:8080/api/v1/rpc -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"listContacts","id":1}' | jq
+rpc listContacts | jq     # rpc() is in api.md
 ```
 
 Then create a Signal group with both people in it. Agent names should be distinct

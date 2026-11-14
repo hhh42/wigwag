@@ -1,6 +1,9 @@
 # wigwag HTTP API, quick reference
 
-The same API as `signal-cli daemon --http`. Default address: `http://127.0.0.1:8080`.
+The same API as `signal-cli daemon --http`. Served on a Unix socket with `--socket`
+(what the service files use), otherwise on `http://127.0.0.1:8080`. Requests that look
+like they come from a browser (`Origin`, `Sec-Fetch-*`) get `403`; with `--token-file`,
+requests need `Authorization: Bearer <token>`. At most 16 event streams at once.
 
 | Endpoint | |
 |---|---|
@@ -11,9 +14,13 @@ The same API as `signal-cli daemon --http`. Default address: `http://127.0.0.1:8
 ## Calls you'll use
 
 ```sh
+# Unix socket (the service files' default; on macOS it's in ~/Library/Application Support/wigwag).
+WW_OPTS=(--unix-socket "${WIGWAG_SOCKET:-$XDG_RUNTIME_DIR/wigwag/api.sock}") WW_URL=http://localhost
+# TCP instead:  WW_OPTS=() WW_URL=http://127.0.0.1:8080
 rpc() {  # rpc METHOD [PARAMS_JSON]
   params=${2:-'{}'}
-  curl -s localhost:8080/api/v1/rpc -H 'content-type: application/json' \
+  curl -s "${WW_OPTS[@]}" "$WW_URL/api/v1/rpc" -H 'content-type: application/json' \
+    ${WIGWAG_TOKEN_FILE:+-H "Authorization: Bearer $(cat "$WIGWAG_TOKEN_FILE")"} \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$params}"
 }
 

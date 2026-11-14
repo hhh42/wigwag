@@ -85,8 +85,12 @@ wigwag send +15557654321 -m "hello from wigwag"
 | Flag / env | Default | |
 |---|---|---|
 | `--data-dir` / `WIGWAG_DATA_DIR` | `~/.local/share/wigwag` (Linux) | account database and attachments |
-| `--passphrase-file` / `WIGWAG_PASSPHRASE_FILE`, or `WIGWAG_PASSPHRASE` | none | encrypts the database with SQLCipher |
-| `daemon --http` | `127.0.0.1:8080` | |
+| `--passphrase-file` / `WIGWAG_PASSPHRASE_FILE`, or `WIGWAG_PASSPHRASE` | none | encrypts the database with SQLCipher; the file must be `0600` |
+| `daemon --http` | `127.0.0.1:8080` (unless `--socket`) | TCP address |
+| `daemon --socket` / `WIGWAG_SOCKET` | none | Unix socket, mode `0600`; replaces the TCP default |
+| `daemon --no-http` | off | serve no API (agent only) |
+| `daemon --token-file` / `WIGWAG_TOKEN_FILE` | none | require `Authorization: Bearer`; file must be `0600` |
+| `daemon --send-dir` / `WIGWAG_SEND_DIR` | none | path attachments only from here |
 | `daemon --keep-messages` | off | presage stores every message; by default wigwag purges them hourly |
 | `daemon --attachment-ttl-days` | 7 | downloaded attachments are deleted after this |
 | `daemon --max-attachment-mib` | 100 | |
@@ -97,29 +101,37 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
 
 ## Security
 
-- **The API has no authentication by default**, the same as signal-cli's. Anything
-  that can reach the port can read your messages and send as you. wigwag binds to
-  `127.0.0.1` by default and warns you if you bind it anywhere else.
-- **Web pages are refused.** Requests with an `Origin` header (every browser sends one
-  cross-site) get `403`, and on a loopback bind so does any `Host` other than
-  `localhost`/`127.0.0.1`/`[::1]` (DNS rebinding). Without this, any page you opened
-  could POST a `send` to `127.0.0.1:8080`.
-- **Add a token** to keep other programs and users on the machine out:
+wigwag holds your Signal identity keys and can read and send as your account, so it
+is built to expose as little as possible. [SECURITY.md](SECURITY.md) has the full
+threat model. The short version:
+
+- **Prefer the Unix socket.** `wigwag daemon --socket <path>` serves the API on a
+  socket with mode `0600`, so only your user can connect, with no port at all. The
+  service files in `contrib/` use it. With `--no-http` (agent only) nothing is served.
+- **TCP has no authentication by default**, the same as signal-cli's, because that's
+  what signal-cli clients expect. Anything that can reach the port can read your
+  messages and send as you. wigwag binds `127.0.0.1` and warns about anything else.
+  Add a token to keep other programs and users out:
 
   ```sh
-  umask 077; openssl rand -hex 32 > ~/.config/wigwag/token
+  (umask 077; openssl rand -hex 32 > ~/.config/wigwag/token)
   wigwag daemon --token-file ~/.config/wigwag/token
   ```
 
-  Clients then need `Authorization: Bearer <token>`. To reach it from another
+  Clients then send `Authorization: Bearer <token>`. To reach it from another
   machine, keep it on loopback and tunnel: `ssh -N -L 8080:127.0.0.1:8080 host`.
-- **Confine attachment paths** with `--send-dir <dir>`. Otherwise a `send` can attach
-  any file the daemon can read (`~/.ssh/id_ed25519` included). `data:` URIs always work.
-- **Running only the agent?** `wigwag daemon --no-http --agent …` opens no port at all.
-- **Lock down the agent command.** Messages in a chat, including from people
-  you haven't allowed, become its prompt, so treat them as prompt injection. Give it
-  no tools or connectors it doesn't need, for example
-  `--command 'claude -p --tools "" --strict-mcp-config'`, and run it in an empty directory.
+- **Web pages are refused.** Any request carrying `Origin` or `Sec-Fetch-*` (which
+  browsers add) gets `403`, and on loopback or the socket so does any `Host` other
+  than `localhost`/`127.0.0.1`/`[::1]` (DNS rebinding). Without this, any page you
+  opened could POST a `send` to `127.0.0.1:8080`.
+- **Attachments by path are fenced.** wigwag refuses anything in its own data
+  directory (the keys), anything that isn't a regular file, and anything over the
+  size limit. `--send-dir <dir>` narrows it to one folder. `data:` URIs always work.
+- **Secret files must be private.** `--passphrase-file` and `--token-file` are
+  refused if group or others can read them, or if you don't own them, as ssh does.
+- **The process is locked down.** umask `077` for everything it creates, no core
+  dumps, and on Linux it is non-dumpable, so other processes of your own user can't
+  read its memory or ptrace it.
 - **Encrypt the database.** It holds your account's identity keys. Without a
   passphrase it is plain SQLite.
 - **New safety numbers are trusted automatically**, like signal-cli's
@@ -128,6 +140,24 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
 - **A linked device can read everything** the account receives. Linking wigwag to
   your personal account gives the bot your messages. Restrict who it answers on
   the bot side (for example with Hermes's `SIGNAL_ALLOWED_USERS`).
+
+### The agent
+
+Treat everything in a chat as hostile input to the agent: prompt injection.
+
+- It answers only the owner, `--allow` and Note to Self, but other people's messages
+  in the same chat are in its prompt. Each of those lines is labelled
+  `Name (not <owner>)`, since anyone can set their profile name to yours.
+- **It runs as you.** Whatever the agent command can do, a successful prompt
+  injection can do, including connecting to wigwag itself. Give it no tools and no
+  connectors unless you need them, and run it in an empty folder:
+  `--agent-command 'claude -p --tools "" --strict-mcp-config'`. For real isolation,
+  run it as another user (`sudo -u wigwag-agent claude -p …`) or in a container.
+- It gets none of wigwag's `WIGWAG_*` environment (passphrase included), runs in
+  its own process group that is killed on timeout, and its output is capped
+  (256 KiB read, 4000 characters sent). Replies go only to the chat it was asked in.
+- `--max-agent-turns` and `--max-replies-per-hour` bound how much it can be made to
+  say, and to spend.
 
 ## Known limits
 

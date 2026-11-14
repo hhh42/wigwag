@@ -8,6 +8,7 @@ mod attachments;
 mod directory;
 mod envelope;
 mod events;
+mod harden;
 mod http;
 mod ranges;
 mod rpc;
@@ -58,6 +59,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once at startup, so one variant being large costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Link as a new device on an existing Signal account (scan the QR code with your phone).
@@ -84,10 +87,15 @@ enum Command {
     },
     /// Serve signal-cli's HTTP API: /api/v1/rpc, /api/v1/events, /api/v1/check.
     Daemon {
-        /// Address to listen on. Anything that can reach it can send as you: keep it local.
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        http: SocketAddr,
-        /// Don't serve HTTP at all (for running just the built-in agent).
+        /// TCP address to listen on [default: 127.0.0.1:8080, unless --socket is given].
+        /// Anything that can reach it can send as you: keep it local.
+        #[arg(long, conflicts_with = "no_http")]
+        http: Option<SocketAddr>,
+        /// Serve the API on a Unix socket instead (mode 0600: only you can connect).
+        /// The safest way to expose the API. `curl --unix-socket PATH http://localhost/…`
+        #[arg(long, env = "WIGWAG_SOCKET", conflicts_with = "no_http")]
+        socket: Option<PathBuf>,
+        /// Don't serve the API at all (for running just the built-in agent).
         #[arg(long)]
         no_http: bool,
         /// Keep a copy of every message in the database (presage's default). Off: purged hourly.
@@ -242,13 +250,17 @@ fn data_dir(cli: &Cli) -> anyhow::Result<PathBuf> {
 
 fn passphrase(cli: &Cli) -> anyhow::Result<Option<String>> {
     if let Some(path) = &cli.passphrase_file {
-        let p = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        return Ok(Some(p.trim_end_matches(['\r', '\n']).to_string()));
+        return harden::read_secret(path, "passphrase").map(Some);
     }
-    Ok(std::env::var("WIGWAG_PASSPHRASE")
+    let p = std::env::var("WIGWAG_PASSPHRASE")
         .ok()
-        .filter(|p| !p.is_empty()))
+        .filter(|p| !p.is_empty());
+    if p.is_some() {
+        warn!(
+            "WIGWAG_PASSPHRASE is in the environment, where child processes can see it; prefer --passphrase-file"
+        );
+    }
+    Ok(p)
 }
 
 async fn open_store(cli: &Cli) -> anyhow::Result<SqliteStore> {
@@ -363,9 +375,7 @@ async fn register(
 }
 
 fn read_token(path: &std::path::Path) -> anyhow::Result<String> {
-    let t =
-        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let t = t.trim().to_string();
+    let t = harden::read_secret(path, "token")?.trim().to_string();
     if t.len() < 16 {
         bail!(
             "the token in {} is under 16 characters; try `openssl rand -hex 32`",
@@ -375,26 +385,48 @@ fn read_token(path: &std::path::Path) -> anyhow::Result<String> {
     Ok(t)
 }
 
+/// Where the API is served. Both empty: not at all.
+#[derive(Default)]
+struct Listen {
+    tcp: Option<SocketAddr>,
+    unix: Option<PathBuf>,
+}
+
 async fn daemon(
     cli: &Cli,
-    http: Option<SocketAddr>,
+    listen: Listen,
     opts: Options,
     backlog: usize,
     token: Option<String>,
     agent: Option<agent::Config>,
 ) -> anyhow::Result<()> {
-    if http.is_none() && agent.is_none() {
+    if listen.tcp.is_none() && listen.unix.is_none() && agent.is_none() {
         bail!("--no-http without --agent leaves nothing to do");
     }
-    if let Some(addr) = http {
+    if let Some(addr) = listen.tcp {
         if !addr.ip().is_loopback() && token.is_none() {
             warn!(
                 "listening on {addr} with no --token-file: anyone who can reach it can read your messages and send as this account"
             );
         } else if token.is_none() {
-            info!("no --token-file: any program on this machine can use the API");
+            info!(
+                "no --token-file: any program on this machine can use the API on {addr} (--socket avoids that)"
+            );
         }
     }
+    // Bind before connecting to Signal, so a bad address fails fast.
+    let tcp = match listen.tcp {
+        Some(addr) => Some(
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("cannot listen on {addr}"))?,
+        ),
+        None => None,
+    };
+    let unix = match &listen.unix {
+        Some(path) => Some(bind_unix(path)?),
+        None => None,
+    };
     let manager = load(cli).await?;
     let hub = Arc::new(Hub::new(backlog));
     let healthy = Arc::new(AtomicBool::new(true));
@@ -402,31 +434,70 @@ async fn daemon(
     if let Some(cfg) = agent {
         tokio::spawn(agent::run(cfg, Arc::new(backend.clone()), hub.clone()));
     }
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    let Some(addr) = http else {
-        info!(account = backend.account(), "running without HTTP");
-        shutdown.await;
-        return Ok(());
-    };
-    info!(account = backend.account(), "serving on http://{addr}");
+    info!(account = backend.account(), "connected");
     let app = http::router(Arc::new(http::AppState {
         backend,
         hub,
         healthy,
         guard: http::Guard {
             token,
-            loopback_host_only: addr.ip().is_loopback(),
+            // Rebinding defence: on loopback and on the socket, Host must be local.
+            loopback_host_only: listen.tcp.is_none_or(|a| a.ip().is_loopback()),
         },
+        streams: Arc::new(tokio::sync::Semaphore::new(http::MAX_STREAMS)),
     }));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("cannot listen on {addr}"))?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let stopped = move || {
+        let mut rx = stop_rx.clone();
+        async move {
+            let _ = rx.wait_for(|s| *s).await;
+        }
+    };
+    let mut servers = tokio::task::JoinSet::new();
+    if let Some(l) = tcp {
+        info!("serving on http://{}", l.local_addr()?);
+        let (app, stop) = (app.clone(), stopped());
+        servers.spawn(async move { axum::serve(l, app).with_graceful_shutdown(stop).await });
+    }
+    if let Some(l) = unix {
+        info!(
+            "serving on unix:{}",
+            listen.unix.as_ref().unwrap().display()
+        );
+        let (app, stop) = (app.clone(), stopped());
+        servers.spawn(async move { axum::serve(l, app).with_graceful_shutdown(stop).await });
+    }
+    if servers.is_empty() {
+        info!("not serving the API (--no-http)");
+    }
+    let _ = tokio::signal::ctrl_c().await;
+    let _ = stop_tx.send(true);
+    while let Some(r) = servers.join_next().await {
+        r??;
+    }
+    if let Some(p) = &listen.unix {
+        let _ = std::fs::remove_file(p);
+    }
     Ok(())
+}
+
+/// A Unix socket only its owner can connect to.
+fn bind_unix(path: &std::path::Path) -> anyhow::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    match std::fs::symlink_metadata(path) {
+        // A socket left over from a previous run.
+        Ok(m) if m.file_type().is_socket() => std::fs::remove_file(path)?,
+        Ok(_) => bail!(
+            "{} exists and is not a socket; not replacing it",
+            path.display()
+        ),
+        Err(_) => {}
+    }
+    // umask 077 (see harden.rs) makes it 0600 from the start; chmod states it outright.
+    let l = tokio::net::UnixListener::bind(path)
+        .with_context(|| format!("cannot listen on {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(l)
 }
 
 async fn send_once(
@@ -479,6 +550,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         } => register(&cli, number.clone(), captcha.clone(), *voice, *force).await,
         Command::Daemon {
             http,
+            socket,
             keep_messages,
             attachment_ttl_days,
             max_attachment_mib,
@@ -499,8 +571,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             let token = token_file.as_deref().map(read_token).transpose()?;
             let agent = agent.config()?;
-            let http = (!*no_http).then_some(*http);
-            daemon(&cli, http, opts, *backlog, token, agent).await
+            let listen = if *no_http {
+                Listen::default()
+            } else {
+                Listen {
+                    tcp: http.or(socket.is_none().then(|| ([127, 0, 0, 1], 8080).into())),
+                    unix: socket.clone(),
+                }
+            };
+            daemon(&cli, listen, opts, *backlog, token, agent).await
         }
         Command::Send {
             recipient,
@@ -556,6 +635,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    harden::process();
     let filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing::Level::INFO.into())
         .from_env_lossy()
@@ -571,4 +651,27 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     tokio::task::LocalSet::new().run_until(run(cli)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn the_socket_is_private_and_replaces_only_sockets() {
+        let dir = std::env::temp_dir().join(format!("wigwag-test-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("api.sock");
+        let _ = std::fs::remove_file(&p);
+        let l = bind_unix(&p).unwrap();
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        drop(l);
+        bind_unix(&p).expect("a stale socket is replaced");
+        let f = dir.join("not-a-socket");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(bind_unix(&f).is_err());
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+    }
 }

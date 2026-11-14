@@ -140,26 +140,57 @@ impl Attachments {
             .count()
     }
 
+    /// Where an outgoing attachment path really points, if it may be sent.
+    async fn check_path(&self, path: &Path) -> Result<PathBuf, String> {
+        let cannot = |e: std::io::Error| format!("cannot read attachment {}: {e}", path.display());
+        // Resolve symlinks and `..` first, so neither can step around the checks.
+        let real = tokio::fs::canonicalize(path).await.map_err(cannot)?;
+        if let Some(root) = &self.send_root
+            && !real.starts_with(root)
+        {
+            return Err(format!(
+                "attachment {} is outside --send-dir {}",
+                path.display(),
+                root.display()
+            ));
+        }
+        // The data directory holds the account's keys. Only its attachments may go out.
+        let dir = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        if let Some(data_dir) = dir.parent()
+            && real.starts_with(data_dir)
+            && !real.starts_with(&dir)
+        {
+            return Err(format!(
+                "attachment {} is in wigwag's data directory, which holds its keys",
+                path.display()
+            ));
+        }
+        // Devices and pipes (/dev/zero, a FIFO) could hang or exhaust memory.
+        let meta = tokio::fs::metadata(&real).await.map_err(cannot)?;
+        if !meta.is_file() {
+            return Err(format!(
+                "attachment {} is not a regular file",
+                path.display()
+            ));
+        }
+        if meta.len() > self.max_bytes {
+            return Err(format!(
+                "attachment is {} bytes, over the {} byte limit",
+                meta.len(),
+                self.max_bytes
+            ));
+        }
+        Ok(real)
+    }
+
     /// Reads an attachment to send: a file path, or a `data:<mime>[;filename=<name>];base64,<data>` URI.
     pub async fn outgoing(&self, spec: &str) -> Result<Outgoing, String> {
         let out = if let Some(rest) = spec.strip_prefix("data:") {
             parse_data_uri(rest)?
         } else {
             let path = Path::new(spec.strip_prefix("file://").unwrap_or(spec));
-            if let Some(root) = &self.send_root {
-                // Resolve symlinks and `..` first, so neither can step outside the root.
-                let real = tokio::fs::canonicalize(path)
-                    .await
-                    .map_err(|e| format!("cannot read attachment {}: {e}", path.display()))?;
-                if !real.starts_with(root) {
-                    return Err(format!(
-                        "attachment {} is outside --send-dir {}",
-                        path.display(),
-                        root.display()
-                    ));
-                }
-            }
-            let data = tokio::fs::read(path)
+            let real = self.check_path(path).await?;
+            let data = tokio::fs::read(&real)
                 .await
                 .map_err(|e| format!("cannot read attachment {}: {e}", path.display()))?;
             Outgoing {
@@ -262,7 +293,7 @@ mod tests {
         std::fs::create_dir_all(&inside).unwrap();
         std::fs::write(inside.join("a.txt"), b"hi").unwrap();
         std::fs::write(base.join("secret.txt"), b"no").unwrap();
-        let mut a = Attachments::new(base.join("dl"), 1024).unwrap();
+        let mut a = Attachments::new(base.join("data/attachments"), 1024).unwrap();
         a.restrict_sends_to(&inside).unwrap();
         assert!(
             a.outgoing(inside.join("a.txt").to_str().unwrap())
@@ -277,6 +308,32 @@ mod tests {
                 .is_err()
         );
         assert!(a.outgoing("data:text/plain;base64,aGk=").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn refuses_keys_devices_and_big_files() {
+        let base = std::env::temp_dir().join(format!("wigwag-test-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("wigwag.db"), b"keys").unwrap();
+        let a = Attachments::new(base.join("attachments"), 4).unwrap();
+        std::fs::write(base.join("attachments/ok.txt"), b"hi").unwrap();
+        let db = a.outgoing(base.join("wigwag.db").to_str().unwrap()).await;
+        assert!(db.unwrap_err().contains("holds its keys"));
+        assert!(
+            a.outgoing(base.join("attachments/ok.txt").to_str().unwrap())
+                .await
+                .is_ok()
+        );
+        let dev = a.outgoing("/dev/zero").await.unwrap_err();
+        assert!(dev.contains("not a regular file"), "{dev}");
+        let big = std::env::temp_dir().join(format!("wigwag-test-big-{}", std::process::id()));
+        std::fs::write(&big, b"too big").unwrap();
+        assert!(
+            a.outgoing(big.to_str().unwrap())
+                .await
+                .unwrap_err()
+                .contains("limit")
+        );
     }
 
     #[tokio::test]

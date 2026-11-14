@@ -1,17 +1,26 @@
 # systemd user unit: ~/.config/systemd/user/wigwag.service
 #   systemctl --user daemon-reload && systemctl --user enable --now wigwag
 # Link or register first (`wigwag link`), with the same data dir and passphrase.
+#
+# The API is served on a Unix socket only you can connect to:
+#   curl --unix-socket "$XDG_RUNTIME_DIR/wigwag/api.sock" http://localhost/api/v1/check
+# A client that only speaks TCP needs the --http line instead (plus a token).
 [Unit]
 Description=wigwag — Signal daemon (signal-cli HTTP API)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/wigwag daemon --http 127.0.0.1:8080
+ExecStart=%h/.local/bin/wigwag daemon --socket %t/wigwag/api.sock
+#ExecStart=%h/.local/bin/wigwag daemon --http 127.0.0.1:8080
 Environment=WIGWAG_PASSPHRASE_FILE=%h/.config/wigwag/passphrase
-# Optional: require a bearer token on the HTTP API (`openssl rand -hex 32 > …`).
+# Require a bearer token (`umask 077; openssl rand -hex 32 > ~/.config/wigwag/token`).
 #Environment=WIGWAG_TOKEN_FILE=%h/.config/wigwag/token
-# The built-in agent. Uncomment and fill in to turn it on.
+# Path attachments may only come from here.
+#Environment=WIGWAG_SEND_DIR=%h/wigwag-outbox
+
+# The built-in agent. Uncomment and fill in to turn it on, and see "With the agent on"
+# below. Without the agent, `--no-http` isn't needed; with only the agent, add it.
 #Environment=WIGWAG_AGENT_NAME=Chippy
 #Environment=WIGWAG_OWNER=Harold
 #Environment=WIGWAG_ALLOW=<friend's ACI UUID>
@@ -19,14 +28,31 @@ Environment=WIGWAG_PASSPHRASE_FILE=%h/.config/wigwag/passphrase
 #Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The folder the agent works in (its CLAUDE.md applies). Keep it empty if it needs no files.
 #WorkingDirectory=%h/agent
+
 Restart=on-failure
 RestartSec=5
+RuntimeDirectory=wigwag
+RuntimeDirectoryMode=0700
+
+# Sandboxing. wigwag needs its data dir, its runtime dir and the network; nothing else.
+UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+ProtectHome=read-only
 ReadWritePaths=%h/.local/share/wigwag
-# With the agent on, claude needs its own state too:
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+# With the agent on: claude needs its own state, and Node's JIT needs W^X off.
 #ReadWritePaths=%h/.claude %h/.claude.json %h/agent
+#MemoryDenyWriteExecute=no
 
 [Install]
 WantedBy=default.target

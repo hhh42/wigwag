@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- launchd agent: ~/Library/LaunchAgents/org.wigwag.wigwag.plist
      launchd doesn't expand ~: replace /Users/YOU with your home folder.
-     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.wigwag.wigwag.plist -->
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.wigwag.wigwag.plist
+     The API is on a Unix socket only you can connect to; check it with curl's
+     unix-socket option against http://localhost/api/v1/check. A client that only
+     speaks TCP needs the http option set to 127.0.0.1:8080 instead, plus a token. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>org.wigwag.wigwag</string>
@@ -10,21 +13,25 @@
   <array>
     <string>/Users/YOU/.local/bin/wigwag</string>
     <string>daemon</string>
-    <string>--http</string><string>127.0.0.1:8080</string>
+    <string>--socket</string><string>/Users/YOU/Library/Application Support/wigwag/api.sock</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>WIGWAG_PASSPHRASE_FILE</key><string>/Users/YOU/.config/wigwag/passphrase</string>
+    <!-- <key>WIGWAG_TOKEN_FILE</key><string>/Users/YOU/.config/wigwag/token</string> -->
+    <!-- <key>WIGWAG_SEND_DIR</key><string>/Users/YOU/wigwag-outbox</string> -->
     <!-- The built-in agent: uncomment and fill in to turn it on.
     <key>WIGWAG_AGENT_NAME</key><string>Chippy</string>
     <key>WIGWAG_OWNER</key><string>Harold</string>
     <key>WIGWAG_ALLOW</key><string>friend's ACI UUID</string>
-    <key>WIGWAG_AGENT_COMMAND</key><string>claude -p --tools "" --strict-mcp-config</string>
+    (WIGWAG_AGENT_COMMAND: the locked-down claude command from the README.)
     <key>PATH</key><string>/Users/YOU/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     -->
   </dict>
   <!-- The folder the agent works in (its CLAUDE.md applies). -->
   <!-- <key>WorkingDirectory</key><string>/Users/YOU/agent</string> -->
+  <!-- 077: everything wigwag creates is private to you. -->
+  <key>Umask</key><integer>63</integer>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

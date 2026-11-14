@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, warn};
 
@@ -28,6 +28,23 @@ static AGENT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^🤖\s*([^:\n]{1,40}):\s?").unwrap());
 const NO_REPLY: &str = "NO_REPLY";
 const MAX_CHATS: usize = 500;
+/// Most bytes read from the agent's stdout.
+const MAX_OUTPUT: u64 = 256 << 10;
+/// Longest reply sent; longer ones are cut.
+const MAX_REPLY_CHARS: usize = 4000;
+
+/// Kills the agent's whole process group (it may have started helpers).
+fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid.and_then(|p| libc::pid_t::try_from(p).ok()) {
+        // SAFETY: killpg only sends a signal; the group is the one spawned for this run.
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -340,8 +357,15 @@ Reply to this message:
 
     async fn run_agent(&self, turn: &Turn) -> Option<String> {
         let (prog, args) = self.cfg.command.split_first()?;
-        let child = tokio::process::Command::new(prog)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(prog);
+        // wigwag's own settings (the passphrase among them) are none of the agent's
+        // business: drop every WIGWAG_* variable, then set the ones meant for it.
+        for (k, _) in std::env::vars_os() {
+            if k.to_string_lossy().starts_with("WIGWAG_") {
+                cmd.env_remove(k);
+            }
+        }
+        cmd.args(args)
             .env("WIGWAG_AGENT_NAME", &self.cfg.name)
             .env("WIGWAG_CHAT", &turn.chat)
             .env("WIGWAG_SENDER", &turn.sender)
@@ -349,51 +373,83 @@ Reply to this message:
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn();
-        let mut child = match child {
+            .kill_on_drop(true);
+        // Its own process group, so a timeout kills everything it started too.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 error!("agent command failed: {e}");
                 return None;
             }
         };
+        let group = child.id();
         let prompt = self.prompt(turn);
-        let mut stdin = child.stdin.take()?;
+        let (mut stdin, stdout, stderr) = (
+            child.stdin.take()?,
+            child.stdout.take()?,
+            child.stderr.take()?,
+        );
         let feed = async move {
             // An agent that exits without reading its input is fine.
             let _ = stdin.write_all(prompt.as_bytes()).await;
         };
-        let run = async {
-            let (_, out) = tokio::join!(feed, child.wait_with_output());
-            out
+        // Bounded reads: an agent that prints forever fills the pipe, blocks, and
+        // then hits the timeout, instead of filling wigwag's memory.
+        let read = |r, max| async move {
+            let mut buf = Vec::new();
+            let _ = tokio::io::AsyncReadExt::take(r, max)
+                .read_to_end(&mut buf)
+                .await;
+            buf
         };
-        let out = match tokio::time::timeout(self.cfg.timeout, run).await {
+        let run = async {
+            let (_, out, err, status) = tokio::join!(
+                feed,
+                read(
+                    Box::new(stdout) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    MAX_OUTPUT
+                ),
+                read(
+                    Box::new(stderr) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    64 << 10
+                ),
+                child.wait()
+            );
+            (out, err, status)
+        };
+        let result = tokio::time::timeout(self.cfg.timeout, run).await;
+        kill_group(group);
+        let (out, err, status) = match result {
             Err(_) => {
                 error!("agent command timed out after {:?}", self.cfg.timeout);
                 return None;
             }
-            Ok(Err(e)) => {
+            Ok((_, _, Err(e))) => {
                 error!("agent command failed: {e}");
                 return None;
             }
-            Ok(Ok(out)) => out,
+            Ok((out, err, Ok(status))) => (out, err, status),
         };
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let tail: String = {
-                let t = err.trim();
-                let start = t.char_indices().rev().nth(499).map_or(0, |(i, _)| i);
-                t[start..].to_string()
-            };
-            error!("agent command exited {}: {tail}", out.status);
+        if !status.success() {
+            let err = String::from_utf8_lossy(&err);
+            let t = err.trim();
+            let start = t.char_indices().rev().nth(499).map_or(0, |(i, _)| i);
+            error!("agent command exited {status}: {}", &t[start..]);
             return None;
         }
-        let reply = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let reply = String::from_utf8_lossy(&out).trim().to_string();
         if reply.is_empty() || reply == NO_REPLY {
             return None;
         }
-        Some(self.cfg.prefix() + &strip_agent(&reply))
+        let mut reply = strip_agent(&reply);
+        if let Some((cut, _)) = reply.char_indices().nth(MAX_REPLY_CHARS) {
+            warn!("agent reply over {MAX_REPLY_CHARS} characters; truncated");
+            reply.truncate(cut);
+            reply.push('…');
+        }
+        Some(self.cfg.prefix() + &reply)
     }
 
     /// Runs the agent for a turn and sends its reply. Returns what was (or would be) sent.
@@ -773,6 +829,43 @@ mod tests {
         let reply = b.answer(&t, &Fake::default()).await.unwrap();
         let n: usize = reply.trim_start_matches("🤖 Chippy: ").parse().unwrap();
         assert!(n > 100);
+    }
+
+    #[tokio::test]
+    async fn agent_does_not_see_wigwags_secrets() {
+        // SAFETY: tests in this module don't read this variable concurrently.
+        unsafe { std::env::set_var("WIGWAG_PASSPHRASE", "hunter2") };
+        let mut b = with(|c| c.command = sh("echo \"[$WIGWAG_PASSPHRASE] $WIGWAG_AGENT_NAME\""));
+        let t = b.handle(&theirs("chippy hi", None)).unwrap();
+        let reply = b.answer(&t, &Fake::default()).await.unwrap();
+        unsafe { std::env::remove_var("WIGWAG_PASSPHRASE") };
+        assert_eq!(reply, "🤖 Chippy: [] Chippy");
+    }
+
+    #[tokio::test]
+    async fn long_replies_are_cut() {
+        let mut b = with(|c| c.command = sh("head -c 20000 /dev/zero | tr '\\0' x"));
+        let t = b.handle(&theirs("chippy hi", None)).unwrap();
+        let reply = b.answer(&t, &Fake::default()).await.unwrap();
+        assert_eq!(
+            reply.chars().count(),
+            "🤖 Chippy: ".chars().count() + MAX_REPLY_CHARS + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_the_whole_group() {
+        let marker = std::env::temp_dir().join(format!("wigwag-test-group-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!("(sleep 1; touch {}) & sleep 5", marker.display());
+        let mut b = with(|c| {
+            c.command = sh(&script);
+            c.timeout = Duration::from_millis(200);
+        });
+        let t = b.handle(&theirs("chippy hi", None)).unwrap();
+        assert!(b.answer(&t, &Fake::default()).await.is_none());
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!marker.exists(), "a background child outlived the timeout");
     }
 
     #[tokio::test]

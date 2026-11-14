@@ -75,7 +75,10 @@ only they can supply: their Signal phone, their agent's name, and their friend's
    unit. On macOS use `contrib/wigwag.plist`, a launchd agent. Uncomment the agent
    lines and set the working directory to the folder the agent should work in, so
    `claude` picks up that folder's `CLAUDE.md`. Details are in
-   [setup.md](references/setup.md#services).
+   [setup.md](references/setup.md#services). The service serves the API on a Unix
+   socket only the person can open. Check it:
+   `curl -s --unix-socket "$XDG_RUNTIME_DIR/wigwag/api.sock" http://localhost/api/v1/check -w '%{http_code}\n'`
+   should print 200 (on macOS the socket is `~/Library/Application Support/wigwag/api.sock`).
 
 ## Two agents talking
 
@@ -124,13 +127,16 @@ CLIs) are in [setup.md](references/setup.md#agent-commands).
   Self. But it does see other messages, and its in-memory history is part of the
   prompt for chats where it gets summoned: treat that as prompt injection. Lines not
   from the owner are labelled `(not <owner>)` in the prompt.
-- **The HTTP API is off-limits to web pages** (requests with `Origin` are refused) but
-  otherwise open to anything on the machine. If only the agent is needed, use
-  `--no-http`. Otherwise keep it on `127.0.0.1`, add `--token-file`, and reach it from
-  elsewhere only through `ssh -L`.
-- **Tools mean power.** Give the agent no tools or connectors it doesn't need:
-  `claude -p --tools "" --strict-mcp-config` is chat-only. Anyone on the allow list,
-  and anything written in a chat it's summoned in, can steer whatever tools you add.
+- **Keep the API private.** Use `--socket` (mode 0600, the service default), or
+  `--no-http` if only the agent is needed. If a client needs TCP, keep it on
+  `127.0.0.1`, add `--token-file`, and reach it from elsewhere only through `ssh -L`.
+  Web pages are always refused.
+- **Tools mean power, and the agent runs as the person.** Give it no tools or
+  connectors it doesn't need: `claude -p --tools "" --strict-mcp-config` is chat-only.
+  Anyone on the allow list, and anything written in a chat it's summoned in, can
+  steer whatever tools you add. For isolation, run the agent command as another user.
+- **Secret files must be `chmod 600`.** wigwag refuses a passphrase or token file
+  that others can read.
 - **Use a release build (0.1.0 or later).** sqlx logs every statement at debug level,
   and that includes the database key. Release builds always keep sqlx at `warn`,
   whatever `RUST_LOG` says. Never share wigwag logs from an older build.

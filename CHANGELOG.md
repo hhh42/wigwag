@@ -13,6 +13,25 @@
 - `--send-dir`: path attachments must resolve inside it.
 - The agent's prompt labels every line not from the owner, so a stranger can't pose as
   the owner by profile name, and says only the owner gives instructions.
+- `--socket <path>`: serve the API on a Unix socket (mode `0600`) instead of TCP. The
+  systemd and launchd files now use it.
+- Browser requests are also recognised by `Sec-Fetch-*` headers. Responses carry
+  `Cache-Control: no-store` and `nosniff`. At most 16 event streams at once.
+- Path attachments: never from wigwag's data directory (the keys) apart from its
+  attachments, never a device or FIFO, and sizes are checked before reading.
+- `--passphrase-file` and `--token-file` must be `0600` and owned by you, or wigwag
+  refuses them. Using `WIGWAG_PASSPHRASE` from the environment now warns.
+- Process hardening: umask `077`, no core dumps, and non-dumpable on Linux (no ptrace
+  or `/proc/<pid>/mem` from other processes of the same user).
+- Agent: no `WIGWAG_*` variables (passphrase included) reach the agent command; it runs
+  in its own process group, killed on timeout; output is capped at 256 KiB read and
+  4000 characters sent.
+- systemd unit: `UMask=0077`, `ProtectHome=read-only`, a system-call filter,
+  `MemoryDenyWriteExecute`, namespace and address-family restrictions.
+- CI: every action pinned to a commit SHA, read-only permissions, no persisted
+  credentials, `cargo audit` on every change and weekly, Dependabot. Releases carry a
+  signed build-provenance attestation (`gh attestation verify`).
+- `SECURITY.md` now has a threat model and a hardening checklist.
 
 ## 0.1.0 — 2026-11-12
 
