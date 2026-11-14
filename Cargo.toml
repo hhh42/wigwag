@@ -17,7 +17,7 @@ presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "json", "query"] }
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.5", features = ["derive", "env"] }
 directories = "6.0"
 futures = "0.3"
