@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-14
 
 - **The agent bridge is now Rust, inside the daemon:** `wigwag daemon --agent <Name>`.
   `bridge/wigwag_bridge.py` and its service units are gone. Flags map as `--name` →

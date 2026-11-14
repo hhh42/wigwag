@@ -38,7 +38,7 @@ only they can supply: their Signal phone, their agent's name, and their friend's
    `aarch64-apple-darwin`. Each tarball also contains the service files and this
    skill.
    ```sh
-   v=v0.1.0 t=aarch64-apple-darwin        # or x86_64-/aarch64-unknown-linux-gnu
+   v=v0.2.0 t=aarch64-apple-darwin        # or x86_64-/aarch64-unknown-linux-gnu
    curl -fLO https://github.com/hhh42/wigwag/releases/download/$v/wigwag-$v-$t.tar.gz
    tar xzf wigwag-$v-$t.tar.gz && mkdir -p ~/.local/bin
    cp wigwag-$v-$t/wigwag ~/.local/bin/

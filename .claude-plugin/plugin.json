@@ -1,7 +1,7 @@
 {
   "name": "wigwag",
   "description": "Put your AI agent on Signal: set up wigwag, make the agent answer to its name, and let two people's agents talk to each other.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "Harold Hersey" },
   "homepage": "https://github.com/hhh42/wigwag",
   "repository": "https://github.com/hhh42/wigwag",

@@ -1,6 +1,6 @@
 [package]
 name = "wigwag"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A small Signal daemon in Rust that speaks signal-cli's HTTP JSON-RPC API"
 license = "AGPL-3.0-only"
