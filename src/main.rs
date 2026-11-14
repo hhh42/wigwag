@@ -98,6 +98,12 @@ enum Command {
         /// Envelopes held for the next subscriber while none is connected.
         #[arg(long, default_value_t = 1000)]
         backlog: usize,
+        /// File holding a token; when given, every request needs `Authorization: Bearer <token>`.
+        #[arg(long, env = "WIGWAG_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        /// Only send attachments given by path from inside this directory (data: URIs always work).
+        #[arg(long, env = "WIGWAG_SEND_DIR")]
+        send_dir: Option<PathBuf>,
     },
     /// Send one message and exit.
     Send {
@@ -264,11 +270,33 @@ async fn register(
     Ok(())
 }
 
-async fn daemon(cli: &Cli, addr: SocketAddr, opts: Options, backlog: usize) -> anyhow::Result<()> {
-    if !addr.ip().is_loopback() {
-        warn!(
-            "listening on {addr}: the API has no authentication, so anyone who can reach it can send as this account"
+fn read_token(path: &std::path::Path) -> anyhow::Result<String> {
+    let t =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let t = t.trim().to_string();
+    if t.len() < 16 {
+        bail!(
+            "the token in {} is under 16 characters; try `openssl rand -hex 32`",
+            path.display()
         );
+    }
+    Ok(t)
+}
+
+async fn daemon(
+    cli: &Cli,
+    addr: SocketAddr,
+    opts: Options,
+    backlog: usize,
+    token: Option<String>,
+) -> anyhow::Result<()> {
+    if !addr.ip().is_loopback() && token.is_none() {
+        warn!(
+            "listening on {addr} with no --token-file: anyone who can reach it can read your messages and send as this account"
+        );
+    }
+    if token.is_none() {
+        info!("no --token-file: any program on this machine can use the API");
     }
     let manager = load(cli).await?;
     let hub = Arc::new(Hub::new(backlog));
@@ -279,6 +307,10 @@ async fn daemon(cli: &Cli, addr: SocketAddr, opts: Options, backlog: usize) -> a
         backend,
         hub,
         healthy,
+        guard: http::Guard {
+            token,
+            loopback_host_only: addr.ip().is_loopback(),
+        },
     }));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -348,14 +380,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             attachment_ttl_days,
             max_attachment_mib,
             backlog,
+            token_file,
+            send_dir,
         } => {
-            let opts = options(
+            let mut opts = options(
                 &cli,
                 *max_attachment_mib,
                 *attachment_ttl_days,
                 *keep_messages,
             )?;
-            daemon(&cli, *http, opts, *backlog).await
+            if let Some(d) = send_dir {
+                opts.attachments.restrict_sends_to(d)?;
+            }
+            let token = token_file.as_deref().map(read_token).transpose()?;
+            daemon(&cli, *http, opts, *backlog, token).await
         }
         Command::Send {
             recipient,

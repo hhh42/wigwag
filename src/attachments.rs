@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 pub struct Attachments {
     dir: PathBuf,
     pub max_bytes: u64,
+    /// When set, outgoing attachments given by path must resolve inside it.
+    send_root: Option<PathBuf>,
 }
 
 /// A stable, filesystem-safe id: a hash of the pointer's digest (or key), plus an extension.
@@ -85,7 +87,16 @@ pub struct Outgoing {
 impl Attachments {
     pub fn new(dir: PathBuf, max_bytes: u64) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir, max_bytes })
+        Ok(Self {
+            dir,
+            max_bytes,
+            send_root: None,
+        })
+    }
+
+    pub fn restrict_sends_to(&mut self, root: &Path) -> std::io::Result<()> {
+        self.send_root = Some(std::fs::canonicalize(root)?);
+        Ok(())
     }
 
     pub fn path(&self, id: &str) -> Option<PathBuf> {
@@ -135,6 +146,19 @@ impl Attachments {
             parse_data_uri(rest)?
         } else {
             let path = Path::new(spec.strip_prefix("file://").unwrap_or(spec));
+            if let Some(root) = &self.send_root {
+                // Resolve symlinks and `..` first, so neither can step outside the root.
+                let real = tokio::fs::canonicalize(path)
+                    .await
+                    .map_err(|e| format!("cannot read attachment {}: {e}", path.display()))?;
+                if !real.starts_with(root) {
+                    return Err(format!(
+                        "attachment {} is outside --send-dir {}",
+                        path.display(),
+                        root.display()
+                    ));
+                }
+            }
             let data = tokio::fs::read(path)
                 .await
                 .map_err(|e| format!("cannot read attachment {}: {e}", path.display()))?;
@@ -229,6 +253,30 @@ mod tests {
         assert_eq!(out.file_name.as_deref(), Some("a.png"));
         assert_eq!(out.data, b"hi");
         assert!(parse_data_uri("text/plain,hi").is_err());
+    }
+
+    #[tokio::test]
+    async fn send_dir_confines_paths() {
+        let base = std::env::temp_dir().join("wigwag-test-senddir");
+        let inside = base.join("ok");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::write(inside.join("a.txt"), b"hi").unwrap();
+        std::fs::write(base.join("secret.txt"), b"no").unwrap();
+        let mut a = Attachments::new(base.join("dl"), 1024).unwrap();
+        a.restrict_sends_to(&inside).unwrap();
+        assert!(
+            a.outgoing(inside.join("a.txt").to_str().unwrap())
+                .await
+                .is_ok()
+        );
+        let escape = inside.join("../secret.txt");
+        assert!(a.outgoing(escape.to_str().unwrap()).await.is_err());
+        assert!(
+            a.outgoing(base.join("secret.txt").to_str().unwrap())
+                .await
+                .is_err()
+        );
+        assert!(a.outgoing("data:text/plain;base64,aGk=").await.is_ok());
     }
 
     #[tokio::test]

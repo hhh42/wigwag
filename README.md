@@ -97,9 +97,29 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
 
 ## Security
 
-- **The API has no authentication**, the same as signal-cli's. Anything that can
-  reach the port can read your messages and send as you. wigwag binds to
+- **The API has no authentication by default**, the same as signal-cli's. Anything
+  that can reach the port can read your messages and send as you. wigwag binds to
   `127.0.0.1` by default and warns you if you bind it anywhere else.
+- **Web pages are refused.** Requests with an `Origin` header (every browser sends one
+  cross-site) get `403`, and on a loopback bind so does any `Host` other than
+  `localhost`/`127.0.0.1`/`[::1]` (DNS rebinding). Without this, any page you opened
+  could POST a `send` to `127.0.0.1:8080`.
+- **Add a token** to keep other programs and users on the machine out:
+
+  ```sh
+  umask 077; openssl rand -hex 32 > ~/.config/wigwag/token
+  wigwag daemon --token-file ~/.config/wigwag/token
+  wigwag-bridge --token-file ~/.config/wigwag/token …
+  ```
+
+  Clients then need `Authorization: Bearer <token>`. To reach it from another
+  machine, keep it on loopback and tunnel: `ssh -N -L 8080:127.0.0.1:8080 host`.
+- **Confine attachment paths** with `--send-dir <dir>`. Otherwise a `send` can attach
+  any file the daemon can read (`~/.ssh/id_ed25519` included). `data:` URIs always work.
+- **Lock down the agent the bridge runs.** Messages in a chat, including from people
+  you haven't allowed, become its prompt, so treat them as prompt injection. Give it
+  no tools or connectors it doesn't need, for example
+  `--command 'claude -p --tools "" --strict-mcp-config'`, and run it in an empty directory.
 - **Encrypt the database.** It holds your account's identity keys. Without a
   passphrase it is plain SQLite.
 - **New safety numbers are trusted automatically**, like signal-cli's
