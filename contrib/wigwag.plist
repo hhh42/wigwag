@@ -15,7 +15,16 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>WIGWAG_PASSPHRASE_FILE</key><string>/Users/YOU/.config/wigwag/passphrase</string>
+    <!-- The built-in agent: uncomment and fill in to turn it on.
+    <key>WIGWAG_AGENT_NAME</key><string>Chippy</string>
+    <key>WIGWAG_OWNER</key><string>Harold</string>
+    <key>WIGWAG_ALLOW</key><string>friend's ACI UUID</string>
+    <key>WIGWAG_AGENT_COMMAND</key><string>claude -p --tools "" --strict-mcp-config</string>
+    <key>PATH</key><string>/Users/YOU/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    -->
   </dict>
+  <!-- The folder the agent works in (its CLAUDE.md applies). -->
+  <!-- <key>WorkingDirectory</key><string>/Users/YOU/agent</string> -->
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

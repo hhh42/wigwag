@@ -3,6 +3,7 @@
 //! Named after the US Army's 1860 flag code (one flag, swung left and right), which
 //! needed nothing but a pole. See "Why wigwag" in the README.
 
+mod agent;
 mod attachments;
 mod directory;
 mod envelope;
@@ -19,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use futures::channel::oneshot;
 use presage::Manager;
 use presage::libsignal_service::configuration::SignalServers;
@@ -86,6 +87,9 @@ enum Command {
         /// Address to listen on. Anything that can reach it can send as you: keep it local.
         #[arg(long, default_value = "127.0.0.1:8080")]
         http: SocketAddr,
+        /// Don't serve HTTP at all (for running just the built-in agent).
+        #[arg(long)]
+        no_http: bool,
         /// Keep a copy of every message in the database (presage's default). Off: purged hourly.
         #[arg(long)]
         keep_messages: bool,
@@ -104,6 +108,8 @@ enum Command {
         /// Only send attachments given by path from inside this directory (data: URIs always work).
         #[arg(long, env = "WIGWAG_SEND_DIR")]
         send_dir: Option<PathBuf>,
+        #[command(flatten)]
+        agent: AgentArgs,
     },
     /// Send one message and exit.
     Send {
@@ -129,6 +135,92 @@ enum Command {
     },
     /// Unlink this device from its account and forget it.
     Unlink,
+}
+
+/// The built-in agent: answer to a name in Signal by running a command.
+#[derive(Args)]
+#[command(next_help_heading = "Agent")]
+struct AgentArgs {
+    /// Turn the agent on, with this name; mentioning it in a chat triggers a reply.
+    #[arg(long = "agent", env = "WIGWAG_AGENT_NAME", value_name = "NAME")]
+    name: Option<String>,
+    /// Another name it answers to (repeatable).
+    #[arg(long = "agent-alias", value_name = "NAME")]
+    aliases: Vec<String>,
+    /// Command to run; gets the prompt on stdin and prints the reply.
+    #[arg(
+        long = "agent-command",
+        env = "WIGWAG_AGENT_COMMAND",
+        default_value = "claude -p"
+    )]
+    command: String,
+    /// UUID or +number of someone else who may summon the agent (repeatable). The owner always can.
+    #[arg(long = "allow", env = "WIGWAG_ALLOW", value_delimiter = ',')]
+    allow: Vec<String>,
+    /// Whose agent this is, by name.
+    #[arg(long, env = "WIGWAG_OWNER", default_value = "my owner")]
+    owner: String,
+    /// Don't answer every Note to Self message.
+    #[arg(long)]
+    no_note_to_self: bool,
+    /// Agent replies in a row before it waits for a person to speak.
+    #[arg(long, env = "WIGWAG_MAX_AGENT_TURNS", default_value_t = 4)]
+    max_agent_turns: u32,
+    #[arg(long, default_value_t = 60)]
+    max_replies_per_hour: usize,
+    /// Recent messages given to the agent.
+    #[arg(long = "agent-history", default_value_t = 20)]
+    history: usize,
+    /// Seconds the agent may take.
+    #[arg(long = "agent-timeout", default_value_t = 300)]
+    timeout: u64,
+    /// File with extra instructions for the agent (persona, rules).
+    #[arg(long = "agent-instructions")]
+    instructions: Option<PathBuf>,
+    /// Run the agent but don't send its replies.
+    #[arg(long = "agent-dry-run")]
+    dry_run: bool,
+}
+
+impl AgentArgs {
+    fn config(&self) -> anyhow::Result<Option<agent::Config>> {
+        let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            return Ok(None);
+        };
+        let command = shlex::split(&self.command)
+            .filter(|c| !c.is_empty())
+            .context("--agent-command is empty or badly quoted")?;
+        let instructions = match &self.instructions {
+            Some(p) => std::fs::read_to_string(p)
+                .with_context(|| format!("cannot read {}", p.display()))?,
+            None => String::new(),
+        };
+        let clean = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        };
+        Ok(Some(agent::Config {
+            name: name.to_string(),
+            command,
+            aliases: clean(&self.aliases),
+            allow: clean(&self.allow).into_iter().collect(),
+            owner: self.owner.clone(),
+            note_to_self: !self.no_note_to_self,
+            max_agent_turns: self.max_agent_turns,
+            max_replies_per_hour: self.max_replies_per_hour,
+            history: self.history,
+            timeout: Duration::from_secs(self.timeout),
+            instructions,
+            dry_run: self.dry_run,
+        }))
+    }
 }
 
 fn data_dir(cli: &Cli) -> anyhow::Result<PathBuf> {
@@ -285,23 +377,39 @@ fn read_token(path: &std::path::Path) -> anyhow::Result<String> {
 
 async fn daemon(
     cli: &Cli,
-    addr: SocketAddr,
+    http: Option<SocketAddr>,
     opts: Options,
     backlog: usize,
     token: Option<String>,
+    agent: Option<agent::Config>,
 ) -> anyhow::Result<()> {
-    if !addr.ip().is_loopback() && token.is_none() {
-        warn!(
-            "listening on {addr} with no --token-file: anyone who can reach it can read your messages and send as this account"
-        );
+    if http.is_none() && agent.is_none() {
+        bail!("--no-http without --agent leaves nothing to do");
     }
-    if token.is_none() {
-        info!("no --token-file: any program on this machine can use the API");
+    if let Some(addr) = http {
+        if !addr.ip().is_loopback() && token.is_none() {
+            warn!(
+                "listening on {addr} with no --token-file: anyone who can reach it can read your messages and send as this account"
+            );
+        } else if token.is_none() {
+            info!("no --token-file: any program on this machine can use the API");
+        }
     }
     let manager = load(cli).await?;
     let hub = Arc::new(Hub::new(backlog));
     let healthy = Arc::new(AtomicBool::new(true));
     let backend = signal::start(manager, opts, hub.clone(), healthy.clone()).await;
+    if let Some(cfg) = agent {
+        tokio::spawn(agent::run(cfg, Arc::new(backend.clone()), hub.clone()));
+    }
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    let Some(addr) = http else {
+        info!(account = backend.account(), "running without HTTP");
+        shutdown.await;
+        return Ok(());
+    };
     info!(account = backend.account(), "serving on http://{addr}");
     let app = http::router(Arc::new(http::AppState {
         backend,
@@ -315,14 +423,9 @@ async fn daemon(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("cannot listen on {addr}"))?;
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await
-    });
-    server.await??;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }
 
@@ -380,8 +483,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             attachment_ttl_days,
             max_attachment_mib,
             backlog,
+            no_http,
             token_file,
             send_dir,
+            agent,
         } => {
             let mut opts = options(
                 &cli,
@@ -393,7 +498,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 opts.attachments.restrict_sends_to(d)?;
             }
             let token = token_file.as_deref().map(read_token).transpose()?;
-            daemon(&cli, *http, opts, *backlog, token).await
+            let agent = agent.config()?;
+            let http = (!*no_http).then_some(*http);
+            daemon(&cli, http, opts, *backlog, token, agent).await
         }
         Command::Send {
             recipient,

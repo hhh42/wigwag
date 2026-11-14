@@ -1,29 +1,29 @@
 ---
 name: wigwag
-description: Set up and run wigwag, a Rust Signal daemon, so an AI agent answers in Signal when its name is mentioned, and so two people's agents can talk to each other in a shared chat. Use when someone wants their agent on Signal, wants to install or link wigwag, wants to run wigwag-bridge, wants to connect their agent with a friend's agent, or is debugging either.
+description: Set up and run wigwag, a Rust Signal daemon, so an AI agent answers in Signal when its name is mentioned, and so two people's agents can talk to each other in a shared chat. Use when someone wants their agent on Signal, wants to install or link wigwag, wants to run the wigwag agent, wants to connect their agent with a friend's agent, or is debugging either.
 ---
 
 # wigwag: your agent on Signal
 
-Three pieces, each one replaceable:
+One binary, plus the agent command it runs:
 
 ```
-Signal ⇄ wigwag daemon ⇄ wigwag-bridge ⇄ agent command
-         (HTTP + SSE on      (decides when     (claude -p, or any
-          127.0.0.1:8080)     to answer)        program: stdin → stdout)
+Signal ⇄ wigwag daemon --agent Name ⇄ agent command
+         (decides when to answer;     (claude -p, or any
+          HTTP API optional)           program: stdin → stdout)
 ```
 
 - **wigwag** is linked to the person's own Signal account as an extra device, the way
-  Signal Desktop is. It exposes signal-cli's HTTP API on localhost.
-- **wigwag-bridge** (`bridge/wigwag_bridge.py`, Python 3.10+, stdlib only) watches the
-  event stream. It answers when the agent's name is mentioned by the owner or by
-  someone on the allow list, and it answers everything in Note to Self.
+  Signal Desktop is. It can expose signal-cli's HTTP API on localhost.
+- **The built-in agent** (`--agent <Name>`) watches incoming messages. It answers when
+  the agent's name is mentioned by the owner or by someone on the allow list, and it
+  answers everything in Note to Self. No Python, no second process.
 - **The agent** is any command that reads a prompt on stdin and prints a reply. The
   default is `claude -p`.
 
 Replies go out from the owner's account, prefixed `🤖 <Name>: `. That prefix is the
 whole protocol. It tells people and other agents that the message came from an agent.
-It keeps a bridge from answering its own replies. And it lets agents count how many
+It keeps an agent from answering its own replies. And it lets agents count how many
 agent turns happened in a row, so a back-and-forth between two agents stops instead of
 running forever.
 
@@ -35,13 +35,13 @@ only they can supply: their Signal phone, their agent's name, and their friend's
 1. **Install wigwag.** Get a release binary from
    `https://github.com/hhh42/wigwag/releases`. The builds are
    `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
-   `aarch64-apple-darwin`. Each tarball also contains the bridge, the service files
-   and this skill.
+   `aarch64-apple-darwin`. Each tarball also contains the service files and this
+   skill.
    ```sh
    v=v0.1.0 t=aarch64-apple-darwin        # or x86_64-/aarch64-unknown-linux-gnu
    curl -fLO https://github.com/hhh42/wigwag/releases/download/$v/wigwag-$v-$t.tar.gz
    tar xzf wigwag-$v-$t.tar.gz && mkdir -p ~/.local/bin
-   cp wigwag-$v-$t/wigwag wigwag-$v-$t/wigwag_bridge.py ~/.local/bin/
+   cp wigwag-$v-$t/wigwag ~/.local/bin/
    ~/.local/bin/wigwag --version
    ```
    The binary isn't signed. If macOS says it "cannot be opened", it was downloaded
@@ -59,28 +59,27 @@ only they can supply: their Signal phone, their agent's name, and their friend's
    code. In Signal on the phone, go to Settings → Linked devices → +, and scan it
    **within about a minute**, because the code expires. If it expires, run the
    command again. Afterwards, `wigwag whoami` prints the number and the ACI UUID.
-4. **Run the daemon as a service.** On Linux use `contrib/wigwag.service`, a systemd
-   user unit. On macOS use `contrib/wigwag.plist`, a launchd agent. Then check it:
-   `curl -s localhost:8080/api/v1/check` should return 200. Details are in
-   [setup.md](references/setup.md#services).
-5. **Try the bridge in the foreground first**, in dry-run mode:
+4. **Try the agent in the foreground first**, in dry-run mode:
    ```sh
-   python3 bridge/wigwag_bridge.py --name Jarvis --owner David --dry-run -v
+   wigwag daemon --no-http --agent Jarvis --owner David --agent-dry-run \
+     --agent-command 'claude -p --tools "" --strict-mcp-config'
    ```
    Have the person send any message to **Note to Self**. The log should show the
-   agent running and `[dry run] note-to-self ← 🤖 Jarvis: …`. Then drop `--dry-run`
+   agent running and `[dry run] note-to-self ← 🤖 Jarvis: …`. Then drop `--agent-dry-run`
    and send another one. The reply shows up in Note to Self.
-6. **Let a friend in.** Add `--allow <their ACI UUID>`. Get the UUID with
-   `wigwag`'s `listContacts` (see [api.md](references/api.md)), or ask the friend to
-   run `wigwag whoami`. Once allowed, the friend can mention the agent in a DM or a
-   group and get an answer.
-7. **Run the bridge as a service** with `contrib/wigwag-bridge.service` or
-   `contrib/wigwag-bridge.plist`. Set its working directory to the folder the agent
-   should work in, so `claude` picks up that folder's `CLAUDE.md`.
+5. **Let a friend in.** Add `--allow <their ACI UUID>`. Ask the friend to run
+   `wigwag whoami`, or look it up with `listContacts` (see
+   [api.md](references/api.md)). Once allowed, the friend can mention the agent in a
+   DM or a group and get an answer.
+6. **Run it as a service.** On Linux use `contrib/wigwag.service`, a systemd user
+   unit. On macOS use `contrib/wigwag.plist`, a launchd agent. Uncomment the agent
+   lines and set the working directory to the folder the agent should work in, so
+   `claude` picks up that folder's `CLAUDE.md`. Details are in
+   [setup.md](references/setup.md#services).
 
 ## Two agents talking
 
-Each person runs their own wigwag and bridge, on their own account, and each one
+Each person runs their own wigwag with `--agent`, on their own account, and each one
 allows the other person's UUID. Then they put both people in a Signal group, or use
 their DM. Example: Harold's agent is Chippy and David's agent is Jarvis.
 
@@ -99,7 +98,7 @@ The rules that make this work, and how to tune them, are in
   `🤖 Name:` prefix at the start of a message is not counted as a mention.
 - The prompt tells each agent to **say another agent's name only when it needs an
   answer**, and to reply `NO_REPLY` when nothing needs saying.
-- After `--max-agent-turns` agent messages in a row (default 4), a bridge stops
+- After `--max-agent-turns` agent messages in a row (default 4), an agent stops
   answering other agents until a person says something in that chat.
 - `--max-replies-per-hour` (default 60) caps spending, however the chat goes.
 
@@ -121,14 +120,17 @@ CLIs) are in [setup.md](references/setup.md#agent-commands).
 ## Safety, which you must tell the person
 
 - **A linked device sees everything the account receives.** That includes every DM
-  and every group. The bridge only *answers* the owner, the allow list and Note to
-  Self. But wigwag and the bridge's in-memory history do see other messages, and the
-  history is part of the prompt for chats where the agent gets summoned.
-- **The HTTP API has no authentication.** Keep it on `127.0.0.1`. Never put it on a
-  LAN address or behind a tunnel.
-- **Tools mean power.** With no other flags, `claude -p` can't run tools. Only add
-  `--allowedTools` for what the agent truly needs, and remember that anyone on the
-  allow list can then make it use those tools.
+  and every group. The agent only *answers* the owner, the allow list and Note to
+  Self. But it does see other messages, and its in-memory history is part of the
+  prompt for chats where it gets summoned: treat that as prompt injection. Lines not
+  from the owner are labelled `(not <owner>)` in the prompt.
+- **The HTTP API is off-limits to web pages** (requests with `Origin` are refused) but
+  otherwise open to anything on the machine. If only the agent is needed, use
+  `--no-http`. Otherwise keep it on `127.0.0.1`, add `--token-file`, and reach it from
+  elsewhere only through `ssh -L`.
+- **Tools mean power.** Give the agent no tools or connectors it doesn't need:
+  `claude -p --tools "" --strict-mcp-config` is chat-only. Anyone on the allow list,
+  and anything written in a chat it's summoned in, can steer whatever tools you add.
 - **Use a release build (0.1.0 or later).** sqlx logs every statement at debug level,
   and that includes the database key. Release builds always keep sqlx at `warn`,
   whatever `RUST_LOG` says. Never share wigwag logs from an older build.
@@ -139,7 +141,7 @@ CLIs) are in [setup.md](references/setup.md#agent-commands).
 |---|---|
 | `link` QR "expired" or the phone says the code is invalid | Signal's link window is about 60–90 s. Run it again and scan straight away. |
 | `check` returns 503 | The device was unlinked from the phone. Run `wigwag link` again. |
-| Bridge logs nothing when a friend writes | Their UUID isn't in `--allow`, or they didn't say the name. Run with `-v`. |
+| Agent logs nothing when a friend writes | Their UUID isn't in `--allow`, or they didn't say the name. Try `RUST_LOG=wigwag=debug`. |
 | Sending to `+number` fails | wigwag only knows numbers that are in contacts. Use the ACI UUID. |
 | Agents stop answering each other | That's the turn limit. Someone says anything in the chat and it resets. |
-| Replies appear twice | Two bridges are running for the same account. Run one per account. |
+| Replies appear twice | Two agents are running for the same account. Run one per account. |

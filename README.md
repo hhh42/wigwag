@@ -109,14 +109,14 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
   ```sh
   umask 077; openssl rand -hex 32 > ~/.config/wigwag/token
   wigwag daemon --token-file ~/.config/wigwag/token
-  wigwag-bridge --token-file ~/.config/wigwag/token …
   ```
 
   Clients then need `Authorization: Bearer <token>`. To reach it from another
   machine, keep it on loopback and tunnel: `ssh -N -L 8080:127.0.0.1:8080 host`.
 - **Confine attachment paths** with `--send-dir <dir>`. Otherwise a `send` can attach
   any file the daemon can read (`~/.ssh/id_ed25519` included). `data:` URIs always work.
-- **Lock down the agent the bridge runs.** Messages in a chat, including from people
+- **Running only the agent?** `wigwag daemon --no-http --agent …` opens no port at all.
+- **Lock down the agent command.** Messages in a chat, including from people
   you haven't allowed, become its prompt, so treat them as prompt injection. Give it
   no tools or connectors it doesn't need, for example
   `--command 'claude -p --tools "" --strict-mcp-config'`, and run it in an empty directory.
@@ -144,19 +144,22 @@ There is a systemd user unit in [`contrib/wigwag.service`](contrib/wigwag.servic
 
 ## Your agent on Signal
 
-[`bridge/wigwag_bridge.py`](bridge/wigwag_bridge.py) turns wigwag into an agent that
-answers to its name. It is one Python file and needs nothing beyond the standard
-library. It watches the event stream. When the account owner, or someone you've
-allowed, mentions the agent's name in any chat, it runs your agent command and posts
-the reply into that chat. It answers everything you write in Note to Self.
+`wigwag daemon --agent <Name>` turns wigwag into an agent that answers to its name.
+It's built in: no second process, no Python. When the account owner, or someone
+you've allowed, mentions the agent's name in any chat, it runs your agent command
+and posts the reply into that chat. It answers everything you write in Note to Self.
 
 ```sh
-python3 bridge/wigwag_bridge.py --name Jarvis --owner David \
-  --allow <a friend's ACI UUID> --command 'claude -p'
+wigwag daemon --no-http --agent Jarvis --owner David \
+  --allow <a friend's ACI UUID> --agent-command 'claude -p --tools "" --strict-mcp-config'
 ```
 
+Try it first with `--agent-dry-run`, which runs the agent but sends nothing. See
+`wigwag daemon --help` for the rest (`--agent-alias`, `--agent-instructions`,
+`--agent-timeout`, `--max-agent-turns`, `--max-replies-per-hour`, …).
+
 Replies start with `🤖 Jarvis: `, because they go out from your own account. Two
-people who each run a bridge can put their agents in the same group, and the agents
+people who each run one can put their agents in the same group, and the agents
 talk to each other:
 
 ```
@@ -167,7 +170,7 @@ Harold:     chippy, ask Jarvis when David lands Friday
 ```
 
 Each agent is told to say the other's name only when it needs an answer. Each
-bridge also stops answering other agents after `--max-agent-turns` (default 4)
+one also stops answering other agents after `--max-agent-turns` (default 4)
 agent messages in a row, until a person says something. So two agents can't loop
 forever. The agent command can be anything that reads a prompt on stdin and prints
 a reply: `claude -p`, `ollama run …`, `llm`, or your own script.
@@ -175,7 +178,7 @@ a reply: `claude -p`, `ollama run …`, `llm`, or your own script.
 ### Claude Code skill
 
 The repo ships a skill that walks Claude through the whole setup: install, link,
-services, the bridge, and pairing with a friend's agent. It comes with examples and
+services, the agent, and pairing with a friend's agent. It comes with examples and
 troubleshooting. It's in [`skills/wigwag`](skills/wigwag/SKILL.md).
 
 ```

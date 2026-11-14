@@ -12,6 +12,9 @@ pub type Event = Arc<str>;
 
 pub struct Hub {
     tx: broadcast::Sender<Event>,
+    /// Every event, for in-process listeners (the agent). Not counted as an HTTP
+    /// client, so the backlog still fills for the next `/api/v1/events` subscriber.
+    tap: broadcast::Sender<Event>,
     backlog: Mutex<VecDeque<Event>>,
     capacity: usize,
 }
@@ -19,14 +22,17 @@ pub struct Hub {
 impl Hub {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(16));
+        let (tap, _) = broadcast::channel(capacity.max(16));
         Self {
             tx,
+            tap,
             backlog: Mutex::new(VecDeque::new()),
             capacity,
         }
     }
 
     pub fn publish(&self, event: Event) {
+        let _ = self.tap.send(event.clone());
         let mut backlog = self.backlog.lock().unwrap();
         if self.tx.receiver_count() == 0 {
             if backlog.len() == self.capacity {
@@ -37,6 +43,10 @@ impl Hub {
         } else {
             let _ = self.tx.send(event);
         }
+    }
+
+    pub fn tap(&self) -> broadcast::Receiver<Event> {
+        self.tap.subscribe()
     }
 
     /// Whatever was waiting, then the live feed. Taken under one lock so nothing

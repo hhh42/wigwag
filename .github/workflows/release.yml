@@ -36,7 +36,7 @@ jobs:
         run: |
           name=wigwag-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir "$name"
-          cp target/release/wigwag bridge/wigwag_bridge.py README.md LICENSE CHANGELOG.md "$name/"
+          cp target/release/wigwag README.md LICENSE CHANGELOG.md "$name/"
           cp -R contrib skills "$name/"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"

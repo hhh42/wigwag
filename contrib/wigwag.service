@@ -9,12 +9,24 @@ Wants=network-online.target
 [Service]
 ExecStart=%h/.local/bin/wigwag daemon --http 127.0.0.1:8080
 Environment=WIGWAG_PASSPHRASE_FILE=%h/.config/wigwag/passphrase
+# Optional: require a bearer token on the HTTP API (`openssl rand -hex 32 > …`).
+#Environment=WIGWAG_TOKEN_FILE=%h/.config/wigwag/token
+# The built-in agent. Uncomment and fill in to turn it on.
+#Environment=WIGWAG_AGENT_NAME=Chippy
+#Environment=WIGWAG_OWNER=Harold
+#Environment=WIGWAG_ALLOW=<friend's ACI UUID>
+#Environment="WIGWAG_AGENT_COMMAND=claude -p --tools \"\" --strict-mcp-config"
+#Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The folder the agent works in (its CLAUDE.md applies). Keep it empty if it needs no files.
+#WorkingDirectory=%h/agent
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=%h/.local/share/wigwag
+# With the agent on, claude needs its own state too:
+#ReadWritePaths=%h/.claude %h/.claude.json %h/agent
 
 [Install]
 WantedBy=default.target
